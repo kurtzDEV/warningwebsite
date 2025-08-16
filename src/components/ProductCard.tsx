@@ -8,7 +8,7 @@ import {
   CardTitle 
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ShoppingCart, Check, Info, Star, CheckCircle, Crown } from 'lucide-react';
+import { ShoppingCart, Check, Crown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useCart } from '@/contexts/CartContext';
 import { useToast } from '@/hooks/use-toast';
@@ -43,8 +43,6 @@ const ProductCard = ({
   savingsAmount = 0
 }: ProductCardProps) => {
   const [isHovered, setIsHovered] = useState(false);
-  const [isAdding, setIsAdding] = useState(false);
-  const [isAdded, setIsAdded] = useState(false);
   const { addItem } = useCart();
   const { toast } = useToast();
 

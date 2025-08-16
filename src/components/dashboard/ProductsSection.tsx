@@ -41,7 +41,6 @@ const ProductsSection = () => {
         .order('purchased_at', { ascending: false });
 
       if (error) {
-        console.error('Error loading products:', error);
         toast({
           title: "Erro ao carregar produtos",
           description: "Tente novamente em alguns instantes.",
@@ -52,7 +51,6 @@ const ProductsSection = () => {
 
       setProducts(data || []);
     } catch (error) {
-      console.error('Error loading products:', error);
       toast({
         title: "Erro ao carregar produtos",
         description: "Tente novamente em alguns instantes.",

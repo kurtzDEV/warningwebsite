@@ -70,17 +70,14 @@ const ProductSection = () => {
   const [selectedPeriod, setSelectedPeriod] = useState("mensal");
 
   const getPriceForPeriod = (planId: string, period: string) => {
-    // Preços específicos para cada plano e período
     const priceMap: { [key: string]: { [key: string]: number } } = {
       "public-bypass": {
         "mensal": 90.00,
-        "trimestral": 250.00,
-        "lifetime": 1000.00
+        "trimestral": 250.00
       },
       "private-bypass": {
         "mensal": 150.00,
-        "trimestral": 400.00,
-        "lifetime": 1000.00
+        "trimestral": 400.00
       },
       "exclusive-bypass": {
         "mensal": 1000.00,
@@ -90,19 +87,6 @@ const ProductSection = () => {
     };
     
     return priceMap[planId]?.[period] || 0;
-  };
-
-  const getPeriodText = (period: string) => {
-    switch (period) {
-      case 'mensal':
-        return '/mês';
-      case 'trimestral':
-        return '/trimestre';
-      case 'lifetime':
-        return ' (Vitalício)';
-      default:
-        return '/mês';
-    }
   };
 
   useEffect(() => {
@@ -117,7 +101,7 @@ const ProductSection = () => {
     };
 
     window.addEventListener('scroll', handleScroll);
-    handleScroll(); // Check on initial render
+    handleScroll();
     
     return () => {
       window.removeEventListener('scroll', handleScroll);
@@ -126,7 +110,6 @@ const ProductSection = () => {
 
   return (
     <section id="products" className="py-24 relative overflow-hidden">
-      {/* Background elements */}
       <div className="absolute inset-0 z-0">
         <div className="absolute bottom-0 left-0 right-0 h-1/4 bg-gradient-to-t from-black/40 to-transparent"></div>
         <div className="absolute top-40 right-20 w-80 h-80 bg-warning-purple/20 rounded-full filter blur-[100px] opacity-40"></div>
@@ -164,7 +147,6 @@ const ProductSection = () => {
                   const price = getPriceForPeriod(product.id, period.id);
                   const isLifetime = period.id === "lifetime";
                   
-                  // For lifetime period, only show exclusive-bypass, hide others
                   if (period.id === "lifetime" && product.id !== "exclusive-bypass") {
                     return null;
                   }

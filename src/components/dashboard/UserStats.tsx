@@ -62,7 +62,7 @@ const UserStats = () => {
         .single();
 
       if (statsError && statsError.code !== 'PGRST116') {
-        console.error('Error loading user stats:', statsError);
+        // Error loading user stats
       }
 
       // Carregar produtos do usuário
@@ -73,7 +73,7 @@ const UserStats = () => {
         .eq('status', 'active');
 
       if (productsError) {
-        console.error('Error loading user products:', productsError);
+        // Error loading user products
       }
 
       // Usar dados do banco ou dados simulados

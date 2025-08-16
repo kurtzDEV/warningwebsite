@@ -1,5 +1,5 @@
 
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
@@ -37,6 +37,69 @@ type AuthContextType = {
     success: boolean;
     error?: string;
   }>;
+  isSessionValid: () => boolean;
+  getSessionAge: () => number;
+};
+
+// Rate limiting para tentativas de login
+const loginAttempts = new Map<string, { count: number; lastAttempt: number }>();
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION = 15 * 60 * 1000; // 15 minutos
+
+// Validação de força da senha
+const validatePassword = (password: string): { valid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+  
+  if (password.length < 8) {
+    errors.push('Senha deve ter pelo menos 8 caracteres');
+  }
+  
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Senha deve conter pelo menos uma letra maiúscula');
+  }
+  
+  if (!/[a-z]/.test(password)) {
+    errors.push('Senha deve conter pelo menos uma letra minúscula');
+  }
+  
+  if (!/\d/.test(password)) {
+    errors.push('Senha deve conter pelo menos um número');
+  }
+  
+  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+    errors.push('Senha deve conter pelo menos um caractere especial');
+  }
+  
+  return { valid: errors.length === 0, errors };
+};
+
+// Validação de email
+const validateEmail = (email: string): boolean => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
+// Logging de atividades suspeitas
+const logSuspiciousActivity = async (userId: string | null, activity: string, details: any) => {
+  try {
+    await supabase
+      .from('user_activities')
+      .insert([
+        {
+          user_id: userId,
+          activity_type: 'suspicious_activity',
+          activity_data: {
+            activity,
+            details,
+            timestamp: new Date().toISOString(),
+            user_agent: navigator.userAgent,
+            ip_address: 'client-side', // Em produção, seria obtido do servidor
+          }
+        }
+      ]);
+  } catch (error) {
+    console.error('Failed to log suspicious activity:', error);
+  }
 };
 
 const AuthContext = createContext<AuthContextType>({
@@ -52,6 +115,8 @@ const AuthContext = createContext<AuthContextType>({
   refreshProfile: async () => {},
   forgotPassword: async () => ({ success: false }),
   resetPassword: async () => ({ success: false }),
+  isSessionValid: () => false,
+  getSessionAge: () => 0,
 });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -60,16 +125,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
+  const sessionStartTime = useRef<number>(Date.now());
+
+  const isSessionValid = (): boolean => {
+    if (!session) return false;
+    
+    const now = Date.now();
+    const sessionAge = now - sessionStartTime.current;
+    const maxSessionAge = 24 * 60 * 60 * 1000; // 24 horas
+    
+    return sessionAge < maxSessionAge;
+  };
+
+  const getSessionAge = (): number => {
+    return Date.now() - sessionStartTime.current;
+  };
 
   const refreshProfile = async () => {
     if (!user) {
-      console.log('No user to refresh profile for');
       return;
     }
     
     try {
-      console.log('Refreshing profile for user:', user.id);
-      
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
@@ -81,27 +158,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw error;
       }
       
-      console.log('Profile loaded successfully:', data);
       setProfile(data);
     } catch (error: any) {
       console.error('Error loading user profile:', error.message);
-      // Não mostrar toast aqui pois pode ser esperado que o perfil não exista ainda
     }
   };
 
   useEffect(() => {
     setLoading(true);
     
-    // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, currentSession) => {
-        console.log('Auth state changed:', event, currentSession?.user?.id);
         setSession(currentSession);
         setUser(currentSession?.user ?? null);
         
         if (currentSession?.user) {
+          sessionStartTime.current = Date.now();
           try {
-            // Load existing profile
             const { data: existingProfile, error } = await supabase
               .from('profiles')
               .select('*')
@@ -109,11 +182,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               .single();
               
             if (error && error.code === 'PGRST116') {
-              // Profile doesn't exist, create it
-              console.log('Creating profile for user:', currentSession.user.id);
               await createUserProfile(currentSession.user);
             } else if (existingProfile) {
-              console.log('Profile loaded:', existingProfile);
               setProfile(existingProfile);
             }
           } catch (error) {
@@ -127,7 +197,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     );
     
-    // Check for existing session with timeout
     const checkSession = async () => {
       try {
         const { data: { session: currentSession } } = await supabase.auth.getSession();
@@ -135,6 +204,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(currentSession?.user ?? null);
         
         if (currentSession?.user) {
+          sessionStartTime.current = Date.now();
           try {
             const { data: existingProfile, error } = await supabase
               .from('profiles')
@@ -143,10 +213,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               .single();
               
             if (error && error.code === 'PGRST116') {
-              console.log('Creating profile for existing session user:', currentSession.user.id);
               await createUserProfile(currentSession.user);
             } else if (existingProfile) {
-              console.log('Profile loaded for existing session:', existingProfile);
               setProfile(existingProfile);
             }
           } catch (error) {
@@ -160,11 +228,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
     
-    // Add timeout to prevent infinite loading
     const timeoutId = setTimeout(() => {
-      console.log('Auth timeout reached, setting loading to false');
       setLoading(false);
-    }, 5000); // 5 seconds timeout
+    }, 5000);
     
     checkSession().finally(() => {
       clearTimeout(timeoutId);
@@ -178,111 +244,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const createUserProfile = async (user: User) => {
     try {
-      console.log('Creating profile for user:', user.id);
-      console.log('User metadata:', user.user_metadata);
-      
-      const { data: existingProfile, error: selectError } = await supabase
+      const { data: existingProfile, error: checkError } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single();
 
-      if (selectError && selectError.code !== 'PGRST116') {
-        console.error('Error checking existing profile:', selectError);
-        throw selectError;
-      }
-
-      if (!existingProfile) {
-        console.log('No existing profile found, creating new one...');
-        
-        // Determinar o nome do usuário baseado no provider
-        let username = user.email?.split('@')[0] || 'Usuário';
-        let avatarUrl = null;
-        let fullName = null;
-        
-        if (user.user_metadata?.provider === 'discord') {
-          username = user.user_metadata?.full_name || user.user_metadata?.username || username;
-          avatarUrl = user.user_metadata?.avatar_url;
-          fullName = user.user_metadata?.full_name;
-          console.log('Discord user data:', { username, avatarUrl, fullName });
-        } else if (user.user_metadata?.username) {
-          username = user.user_metadata.username;
-        }
-
-        const profileData = {
-          id: user.id,
-          email: user.email,
-          username: username,
-          avatar_url: avatarUrl,
-          full_name: fullName,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-
-        console.log('Inserting profile data:', profileData);
-
-        const { data: newProfile, error: insertError } = await supabase
+      if (checkError && checkError.code === 'PGRST116') {
+        const { data, error } = await supabase
           .from('profiles')
-          .insert([profileData])
+          .insert([
+            {
+              id: user.id,
+              email: user.email,
+              username: user.user_metadata?.full_name || user.email?.split('@')[0],
+              avatar_url: user.user_metadata?.avatar_url,
+              full_name: user.user_metadata?.full_name,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+          ])
           .select()
           .single();
 
-        if (insertError) {
-          console.error('Error inserting profile:', insertError);
-          throw insertError;
+        if (error) {
+          console.error('Error creating profile:', error);
+          throw error;
         }
 
-        console.log('Profile created successfully:', newProfile);
-        
-        // Atualizar o estado do perfil
-        setProfile(newProfile);
-        
-        // Registrar atividade de criação de perfil
-        await registerActivity(user.id, 'profile_created', { profile_id: newProfile.id });
-        
-        toast({
-          title: "Perfil criado com sucesso!",
-          description: "Seu perfil foi configurado automaticamente.",
-        });
-      } else {
-        console.log('Profile already exists:', existingProfile);
-        
-        // Se o perfil já existe, atualizar com dados do Discord se necessário
-        if (user.user_metadata?.provider === 'discord' && !existingProfile.avatar_url) {
-          console.log('Updating existing profile with Discord data...');
-          
-          const updateData = {
-            avatar_url: user.user_metadata?.avatar_url,
-            username: user.user_metadata?.full_name || user.user_metadata?.username || existingProfile.username,
-            full_name: user.user_metadata?.full_name,
-            updated_at: new Date().toISOString(),
-          };
-
-          console.log('Updating profile with:', updateData);
-
-          const { data: updatedProfile, error: updateError } = await supabase
-            .from('profiles')
-            .update(updateData)
-            .eq('id', user.id)
-            .select()
-            .single();
-
-          if (updateError) {
-            console.error('Error updating profile:', updateError);
-            throw updateError;
-          }
-
-          console.log('Profile updated successfully:', updatedProfile);
-          
-          // Atualizar o estado do perfil
-          setProfile(updatedProfile);
-          
-          // Registrar atividade de atualização de perfil
-          await registerActivity(user.id, 'profile_updated', { field: 'discord_data' });
-        } else {
-          // Se não precisar atualizar, apenas definir o perfil existente
-          setProfile(existingProfile);
-        }
+        setProfile(data);
+      } else if (existingProfile) {
+        setProfile(existingProfile);
       }
     } catch (error: any) {
       console.error('Error creating/updating user profile:', error);
@@ -295,20 +287,110 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const registerActivity = async (userId: string, activityType: string, activityData?: any) => {
-    // Temporariamente desabilitado até os tipos serem atualizados
-    console.log('Activity registered:', { userId, activityType, activityData });
+    try {
+      await supabase
+        .from('user_activities')
+        .insert([
+          {
+            user_id: userId,
+            activity_type: activityType,
+            activity_data: {
+              ...activityData,
+              timestamp: new Date().toISOString(),
+              user_agent: navigator.userAgent,
+            }
+          }
+        ]);
+    } catch (error) {
+      console.error('Failed to register activity:', error);
+    }
   };
 
   const registerLoginStats = async (userId: string) => {
-    // Temporariamente desabilitado até os tipos serem atualizados
-    console.log('Login stats registered for user:', userId);
+    try {
+      const { data: existingStats } = await supabase
+        .from('user_stats')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (existingStats) {
+        await supabase
+          .from('user_stats')
+          .update({
+            total_logins: existingStats.total_logins + 1,
+            last_login: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', userId);
+      } else {
+        await supabase
+          .from('user_stats')
+          .insert([
+            {
+              id: userId,
+              total_logins: 1,
+              last_login: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+          ]);
+      }
+    } catch (error) {
+      console.error('Failed to register login stats:', error);
+    }
   };
 
   const signIn = async (email: string, password: string) => {
     try {
+      // Rate limiting
+      const now = Date.now();
+      const attempts = loginAttempts.get(email) || { count: 0, lastAttempt: 0 };
+      
+      if (attempts.count >= MAX_LOGIN_ATTEMPTS && (now - attempts.lastAttempt) < LOCKOUT_DURATION) {
+        const remainingTime = Math.ceil((LOCKOUT_DURATION - (now - attempts.lastAttempt)) / 60000);
+        await logSuspiciousActivity(null, 'rate_limit_exceeded', { email, attempts: attempts.count });
+        return {
+          success: false,
+          error: `Muitas tentativas de login. Tente novamente em ${remainingTime} minutos.`
+        };
+      }
+
+      // Reset attempts if lockout period has passed
+      if ((now - attempts.lastAttempt) >= LOCKOUT_DURATION) {
+        loginAttempts.delete(email);
+      }
+
+      // Validate email
+      if (!validateEmail(email)) {
+        return {
+          success: false,
+          error: 'Email inválido'
+        };
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       
-      if (error) throw error;
+      if (error) {
+        // Increment failed attempts
+        attempts.count += 1;
+        attempts.lastAttempt = now;
+        loginAttempts.set(email, attempts);
+        
+        if (attempts.count >= MAX_LOGIN_ATTEMPTS) {
+          await logSuspiciousActivity(null, 'max_login_attempts_reached', { email });
+        }
+        
+        throw error;
+      }
+      
+      // Reset attempts on successful login
+      loginAttempts.delete(email);
+      
+      if (data.user) {
+        await registerLoginStats(data.user.id);
+        await registerActivity(data.user.id, 'login_success', { method: 'email' });
+      }
       
       sonnerToast.success('Login bem-sucedido', {
         description: 'Bem-vindo de volta!'
@@ -331,35 +413,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithDiscord = async () => {
     try {
-      console.log('Starting Discord OAuth...');
-      
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'discord',
         options: {
-          redirectTo: window.location.origin,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
+          redirectTo: `${window.location.origin}/dashboard`,
         }
       });
       
-      if (error) {
-        console.error('Discord OAuth error:', error);
-        throw error;
-      }
+      if (error) throw error;
       
-      console.log('Discord OAuth URL generated:', data.url);
-      
-      // Se o redirecionamento foi bem-sucedido, mostrar mensagem
-      if (data.url) {
-        toast({
-          title: "Redirecionando para Discord",
-          description: "Aguarde enquanto você é redirecionado...",
-        });
-        
-        // Redirecionar para Discord
-        window.location.href = data.url;
+      if (data.user) {
+        await registerActivity(data.user.id, 'login_success', { method: 'discord' });
       }
       
       return { success: true };
@@ -379,21 +443,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signUp = async (email: string, password: string, name: string) => {
     try {
+      // Validate email
+      if (!validateEmail(email)) {
+        return {
+          success: false,
+          error: 'Email inválido'
+        };
+      }
+
+      // Validate password strength
+      const passwordValidation = validatePassword(password);
+      if (!passwordValidation.valid) {
+        return {
+          success: false,
+          error: passwordValidation.errors.join(', ')
+        };
+      }
+
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
-            username: name,
+            full_name: name,
           },
-          emailRedirectTo: undefined, // Não redirecionar email
-        },
+          emailRedirectTo: undefined,
+        }
       });
       
       if (error) throw error;
       
+      if (data.user) {
+        await registerActivity(data.user.id, 'account_created', { method: 'email' });
+      }
+      
       sonnerToast.success('Registro bem-sucedido!', {
-        description: 'Sua conta foi criada com sucesso.',
+        description: 'Verifique seu email para confirmar a conta.'
       });
       
       return { success: true };
@@ -413,81 +498,79 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInOrSignUp = async (email: string, password: string, name: string) => {
     try {
+      // Validate email
+      if (!validateEmail(email)) {
+        return {
+          success: false,
+          error: 'Email inválido',
+          action: 'signin' as const
+        };
+      }
+
+      // Validate password strength
+      const passwordValidation = validatePassword(password);
+      if (!passwordValidation.valid) {
+        return {
+          success: false,
+          error: passwordValidation.errors.join(', '),
+          action: 'signin' as const
+        };
+      }
+
       // Primeiro tenta fazer login
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-      
-      if (!signInError) {
-        sonnerToast.success('Login bem-sucedido', {
-          description: 'Bem-vindo de volta!'
-        });
-        return { success: true, action: 'signin' as const };
+      const signInResult = await signIn(email, password);
+      if (signInResult.success) {
+        return { ...signInResult, action: 'signin' as const };
       }
-      
+
       // Se o login falhou, tenta criar a conta
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username: name,
-          },
-          emailRedirectTo: undefined, // Não redirecionar email
-        },
-      });
-      
-      if (signUpError) {
-        // Se o erro for que o usuário já existe, tenta fazer login novamente
-        if (signUpError.message.includes('already registered') || 
-            signUpError.message.includes('already exists') ||
-            signUpError.message.includes('User already registered')) {
-          
-          const { error: retrySignInError } = await supabase.auth.signInWithPassword({ email, password });
-          if (!retrySignInError) {
-            sonnerToast.success('Login bem-sucedido', {
-              description: 'Bem-vindo de volta!'
-            });
-            return { success: true, action: 'signin' as const };
-          }
-        }
-        throw signUpError;
+      const signUpResult = await signUp(email, password, name);
+      if (signUpResult.success) {
+        return { ...signUpResult, action: 'signup' as const };
       }
-      
-      // Se chegou aqui, a conta foi criada com sucesso
-      sonnerToast.success('Conta criada e login realizado!', {
-        description: 'Bem-vindo! Sua conta foi criada automaticamente.',
-      });
-      
-      return { success: true, action: 'signup' as const };
+
+      // Se o erro for que o usuário já existe, tenta fazer login novamente
+      if (signUpResult.error?.includes('already registered')) {
+        const retrySignIn = await signIn(email, password);
+        return { ...retrySignIn, action: 'signin' as const };
+      }
+
+      return { ...signUpResult, action: 'signup' as const };
     } catch (error: any) {
       console.error('Error in signInOrSignUp:', error.message);
-      toast({
-        title: "Erro ao fazer login/criar conta",
-        description: error.message,
-        variant: "destructive",
-      });
       return {
         success: false,
         error: error.message,
-        action: 'signin' as const,
+        action: 'signin' as const
       };
     }
   };
 
   const forgotPassword = async (email: string) => {
     try {
+      // Validate email
+      if (!validateEmail(email)) {
+        return {
+          success: false,
+          error: 'Email inválido'
+        };
+      }
+
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: window.location.origin + '/reset-password',
+        redirectTo: `${window.location.origin}/reset-password`,
       });
       
       if (error) throw error;
       
+      await logSuspiciousActivity(null, 'password_reset_requested', { email });
+      
       sonnerToast.success('Email enviado', {
-        description: 'Verifique sua caixa de entrada para redefinir sua senha.',
+        description: 'Verifique sua caixa de entrada para redefinir a senha.'
       });
       
       return { success: true };
     } catch (error: any) {
-      console.error('Error resetting password:', error.message);
+      console.error('Error requesting password reset:', error.message);
       toast({
         title: "Erro ao enviar email",
         description: error.message,
@@ -502,19 +585,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPassword = async (newPassword: string) => {
     try {
+      // Validate password strength
+      const passwordValidation = validatePassword(newPassword);
+      if (!passwordValidation.valid) {
+        return {
+          success: false,
+          error: passwordValidation.errors.join(', ')
+        };
+      }
+
       const { error } = await supabase.auth.updateUser({
-        password: newPassword,
+        password: newPassword
       });
       
       if (error) throw error;
       
+      if (user) {
+        await registerActivity(user.id, 'password_changed', { method: 'reset' });
+      }
+      
       sonnerToast.success('Senha atualizada', {
-        description: 'Sua senha foi atualizada com sucesso.',
+        description: 'Sua senha foi alterada com sucesso.'
       });
       
       return { success: true };
     } catch (error: any) {
-      console.error('Error updating password:', error.message);
+      console.error('Error resetting password:', error.message);
       toast({
         title: "Erro ao atualizar senha",
         description: error.message,
@@ -529,10 +625,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     try {
-      await supabase.auth.signOut();
+      if (user) {
+        await registerActivity(user.id, 'logout', { method: 'manual' });
+      }
+      
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      setSession(null);
+      setUser(null);
       setProfile(null);
+      sessionStartTime.current = 0;
+      
       sonnerToast.success('Logout realizado', {
-        description: 'Até a próxima!',
+        description: 'Você foi desconectado com sucesso.'
       });
     } catch (error: any) {
       console.error('Error signing out:', error.message);
@@ -557,11 +663,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signOut,
       refreshProfile,
       forgotPassword,
-      resetPassword
+      resetPassword,
+      isSessionValid,
+      getSessionAge,
     }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};

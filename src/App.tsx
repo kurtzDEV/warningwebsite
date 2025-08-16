@@ -13,6 +13,7 @@ import { AuthProvider } from "./contexts/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import SecurityMonitor from "./components/SecurityMonitor";
 
 // Criando o cliente de query com configuração melhorada
 const queryClient = new QueryClient({
@@ -30,6 +31,7 @@ const App = () => (
     <AuthProvider>
       <CartProvider>
         <TooltipProvider>
+          <SecurityMonitor />
           <Toaster />
           <Sonner />
           <BrowserRouter>

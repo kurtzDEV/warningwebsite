@@ -38,7 +38,6 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         const parsedCart = JSON.parse(savedCart);
         setItems(Array.isArray(parsedCart) ? parsedCart : []);
       } catch (e) {
-        console.error('Failed to parse cart from localStorage', e);
         setItems([]);
       }
     }
@@ -49,7 +48,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     try {
       localStorage.setItem('cart', JSON.stringify(items));
     } catch (e) {
-      console.error('Failed to save cart to localStorage', e);
+      // Failed to save cart to localStorage
     }
   }, [items]);
   
